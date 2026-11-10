@@ -21,6 +21,8 @@ final class GradiumVoice: NSObject, URLSessionDataDelegate {
     private lazy var urlSession = URLSession(configuration: .default, delegate: self, delegateQueue: .main)
     private var task: URLSessionDataTask?
     private var onFailure: (() -> Void)?
+    /// Called on the main queue when audio actually starts playing.
+    var onAudioStarted: (() -> Void)?
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -213,6 +215,7 @@ final class GradiumVoice: NSObject, URLSessionDataDelegate {
             player.play()
             started = true
             onFailure = nil   // audio is playing; no fallback from here on
+            onAudioStarted?()
         } catch {
             fail("audio engine: \(error.localizedDescription)")
         }

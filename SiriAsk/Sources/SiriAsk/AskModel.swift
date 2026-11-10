@@ -36,28 +36,51 @@ final class AskModel: ObservableObject {
     private let session = ClaudeSession()
     private let voiceInput = VoiceInput()
     private let voiceOutput = VoiceOutput()
+    /// Per-question timing, written to ~/Library/Logs/SiriAsk/latency.log.
+    private let trace = LatencyTrace()
 
     init() {
+        session.onAnyEvent = { [weak self] in self?.trace.mark(.firstEvent) }
+        session.onTurnStats = { [weak self] stats in self?.trace.note(stats) }
+        voiceOutput.onAudioStarted = { [weak self] voice in
+            guard let self else { return }
+            self.trace.mark(.audioStarted)
+            self.trace.note("voice: \(voice)")
+            self.trace.finish(self.question)
+        }
         session.onText = { [weak self] text in
             guard let self else { return }
+            self.trace.mark(.firstToken)
+            self.trace.mark(.lastToken)
             self.response += text
             if self.phase == .thinking { self.phase = .streaming }
         }
         session.onFinished = { [weak self] error in
             guard let self else { return }
+            self.trace.mark(.resultReceived)
             if let error {
                 self.errorMessage = error
                 self.phase = .failed
+                self.trace.note("error: \(error)")
+                self.trace.finish(self.question)
             } else {
                 self.phase = .done
                 if self.askedByVoice && self.isPanelVisible {
+                    self.trace.mark(.speakCalled)
                     self.voiceOutput.speak(Self.spokenText(for: self.response))
+                } else {
+                    self.trace.finish(self.question)
                 }
             }
         }
 
         voiceInput.onPartial = { [weak self] text in
-            self?.query = text
+            guard let self else { return }
+            if !text.isEmpty, text != self.query {
+                self.trace.mark(.firstWord)
+                self.trace.mark(.lastWord)
+            }
+            self.query = text
         }
         voiceInput.onLevel = { [weak self] level in
             self?.audioLevel = level
@@ -66,6 +89,7 @@ final class AskModel: ObservableObject {
             guard let self else { return }
             self.isListening = false
             self.audioLevel = 0
+            self.trace.mark(.transcriptFinal)
             if !text.isEmpty {
                 self.query = text
                 self.submit(byVoice: true)
@@ -103,6 +127,8 @@ final class AskModel: ObservableObject {
         errorMessage = ""
         phase = .thinking
 
+        if !byVoice { trace.begin(at: .sent) } else { trace.mark(.sent) }
+        if !session.isRunning { trace.note("Claude Code was not running; this question paid the startup cost") }
         if let error = session.send(text) {
             errorMessage = error
             phase = .failed
@@ -114,6 +140,7 @@ final class AskModel: ObservableObject {
         guard isPanelVisible, !voiceInput.isListening else { return }
         voiceOutput.stop()
         isListening = true
+        trace.begin(at: .listenStart)
         voiceInput.start()
     }
 
@@ -125,6 +152,7 @@ final class AskModel: ObservableObject {
             voiceInput.stop()
         } else {
             isListening = true
+            trace.begin(at: .listenStart)
             voiceInput.start()
         }
     }

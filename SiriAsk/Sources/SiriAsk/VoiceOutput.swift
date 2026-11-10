@@ -2,9 +2,22 @@ import AVFoundation
 
 /// Reads answers aloud. Uses Gradium when `.env` has a key and voice, otherwise the macOS voice.
 /// If Gradium fails, it falls back to the macOS voice.
-final class VoiceOutput {
+final class VoiceOutput: NSObject, AVSpeechSynthesizerDelegate {
     private let synthesizer = AVSpeechSynthesizer()
     private let gradium = GradiumVoice()
+
+    /// Called on the main queue when audio starts, with which voice is playing.
+    var onAudioStarted: ((String) -> Void)?
+
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+        gradium.onAudioStarted = { [weak self] in self?.onAudioStarted?("Gradium") }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async { [weak self] in self?.onAudioStarted?("macOS voice") }
+    }
 
     func speak(_ text: String) {
         stop()

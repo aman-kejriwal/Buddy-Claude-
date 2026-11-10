@@ -53,6 +53,10 @@ final class ClaudeSession {
     var onText: ((String) -> Void)?
     /// Called on the main queue when a turn ends. `nil` means success; otherwise the error message.
     var onFinished: ((String?) -> Void)?
+    /// Called on the main queue for every stdout event (used for latency timing).
+    var onAnyEvent: (() -> Void)?
+    /// Called on the main queue with timing/usage numbers Claude Code reports at the end of a turn.
+    var onTurnStats: ((String) -> Void)?
 
     private var process: Process?
     private var stdin: FileHandle?
@@ -233,6 +237,8 @@ final class ClaudeSession {
             let type = object["type"] as? String
         else { return }
 
+        if turnActive { onAnyEvent?() }
+
         switch type {
         case "stream_event":
             // Streamed answer text arrives as text_delta events. Thinking deltas are ignored.
@@ -248,6 +254,11 @@ final class ClaudeSession {
         case "result":
             guard turnActive else { return }
             turnActive = false
+            let usage = object["usage"] as? [String: Any] ?? [:]
+            func n(_ v: Any?) -> String { (v as? NSNumber)?.stringValue ?? "?" }
+            onTurnStats?("Claude Code: duration_ms=\(n(object["duration_ms"])) api_ms=\(n(object["duration_api_ms"])) "
+                + "input=\(n(usage["input_tokens"])) cache_read=\(n(usage["cache_read_input_tokens"])) "
+                + "cache_write=\(n(usage["cache_creation_input_tokens"])) output=\(n(usage["output_tokens"])) model=\(model.rawValue)")
             if object["is_error"] as? Bool == true {
                 let message = (object["result"] as? String) ?? "Claude returned an error."
                 onFinished?(message)

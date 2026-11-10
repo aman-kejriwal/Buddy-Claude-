@@ -2,15 +2,21 @@
 .env
 .env.*
 !.env.example
-SiriAsk/.env
 .jetro/credentials/
-.jetro/daemon/credentials.json
 .jetro/connections/
+*.pem
+*.key
+*.p12
+*.p8
+
+# ── MCP configs (contain local paths & username) ──────
+.mcp.json
+.cursor/mcp.json
+.jetro/mcp-config.json
 
 # ── SiriAsk build output ───────────────────────────────
 # Rebuild with: SiriAsk/build.sh
 SiriAsk/.build/
-SiriAsk/SiriAsk.app/
 *.app/
 *.iconset/
 
@@ -34,8 +40,12 @@ Package.resolved
 data/datasets/
 data/stocks/
 
+# ── Generated knowledge graph ─────────────────────────
+graphify-out/
+
 # ── Editor / agent local settings ─────────────────────
 .claude/settings.local.json
+CLAUDE.local.md
 .vscode/
 .idea/
 
