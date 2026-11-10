@@ -1,0 +1,51 @@
+# ── Secrets & credentials ──────────────────────────────
+.env
+.env.*
+!.env.example
+SiriAsk/.env
+.jetro/credentials/
+.jetro/daemon/credentials.json
+.jetro/connections/
+
+# ── SiriAsk build output ───────────────────────────────
+# Rebuild with: SiriAsk/build.sh
+SiriAsk/.build/
+SiriAsk/SiriAsk.app/
+*.app/
+*.iconset/
+
+# ── Swift / Xcode ──────────────────────────────────────
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+Package.resolved
+
+# ── Jetro local state, caches & queues ────────────────
+.jetro/cache.duckdb
+.jetro/cache.duckdb.wal
+.jetro/*.duckdb
+.jetro/*.duckdb.wal
+.jetro/connector_queue/
+.jetro/render_queue/
+.jetro/daemon/
+
+# ── Local data (may be large / personal) ──────────────
+data/datasets/
+data/stocks/
+
+# ── Editor / agent local settings ─────────────────────
+.claude/settings.local.json
+.vscode/
+.idea/
+
+# ── macOS ──────────────────────────────────────────────
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# ── Logs & temp files ─────────────────────────────────
+*.log
+*.tmp
+*.swp
