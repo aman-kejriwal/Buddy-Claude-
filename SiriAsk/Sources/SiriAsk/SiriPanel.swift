@@ -82,7 +82,7 @@ final class SiriPanelController: NSObject, NSWindowDelegate {
 
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = false          // shadow is drawn in SwiftUI so it follows the card
+        panel.hasShadow = false          // no window shadow: it shows as a dark halo around the glass
         panel.level = .floating
         panel.isReleasedWhenClosed = false
         // NSPanel hides itself whenever the app loses focus (e.g. a click on the menu bar).
@@ -138,7 +138,14 @@ final class SiriPanelController: NSObject, NSWindowDelegate {
             )
         }
 
+        // Fade the whole window in (keeps Liquid Glass live; a SwiftUI fade would turn it black).
+        panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.22
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+        }
         NSApp.activate(ignoringOtherApps: true)
         model.didShow()
         fitToContent()
@@ -307,6 +314,15 @@ struct SiriRootView: View {
     let onDragEnded: () -> Void
 
     @FocusState private var inputFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// visionOS-style tilt: the card leans toward the cursor (degrees around each axis).
+    @State private var tilt: CGSize = .zero
+    /// 0 = folded back in depth (before the pop-in), 1 = resting flat in front of the screen.
+    @State private var popIn: CGFloat = 0
+
+    private let maxTilt: Double = 5
+    private let cardPadding: CGFloat = 10            // just enough room for the hover lift
 
     private let cardRadius: CGFloat = 26
     private let answerWidth: CGFloat = 540          // card 584 minus 22 pt padding on each side
@@ -339,15 +355,73 @@ struct SiriRootView: View {
             )
         )
         .overlay(cardEdge.allowsHitTesting(false))
-        .shadow(color: .black.opacity(0.35), radius: 24, y: 10)
-        .padding(28)                                // room for the glow and shadow
+        // No drop shadow: it drew a dark halo around the glass.
+        // NOTE: no rotation3DEffect / opacity here. Liquid Glass samples the desktop behind the
+        // window, and 3D transforms or a SwiftUI fade force it into an offscreen layer where it
+        // can't see the backdrop, so it renders as solid black. Only 2D scale/offset are safe;
+        // the fade-in is done on the window itself (see SiriPanelController.show).
+        // Pop-in: rises up from below and zooms forward as it settles.
+        .scaleEffect(reduceMotion ? 1 : (0.88 + 0.12 * popIn) * hoverLift, anchor: .bottom)
+        .offset(y: reduceMotion ? 0 : (1 - popIn) * 18)
+        .padding(cardPadding)                       // room for the hover lift
+        .contentShape(Rectangle())
+        .onContinuousHover(coordinateSpace: .local) { phase in
+            guard !reduceMotion else { return }
+            switch phase {
+            case .active(let point):
+                updateTilt(for: point)
+            case .ended:
+                withAnimation(.spring(response: 0.6, dampingFraction: 0.7)) { tilt = .zero }
+            }
+        }
+        .background(GeometryReader { geo in
+            Color.clear.preference(key: PanelSizeKey.self, value: geo.size)
+        })
+        .onPreferenceChange(PanelSizeKey.self) { panelSize = $0 }
+        .onChange(of: model.isPanelVisible) { visible in
+            if visible {
+                withAnimation(.spring(response: 0.55, dampingFraction: 0.72)) { popIn = 1 }
+            } else {
+                popIn = 0
+                tilt = .zero
+            }
+        }
         .fixedSize(horizontal: false, vertical: true)
         .onExitCommand(perform: onDismiss)          // Esc
         .onChange(of: model.showCount) { _ in inputFocused = true }
         .onChange(of: model.phase) { _ in inputFocused = true }   // keep typing after each answer
-        .onAppear { inputFocused = true }
+        .onAppear {
+            inputFocused = true
+            if model.isPanelVisible {
+                withAnimation(.spring(response: 0.55, dampingFraction: 0.72)) { popIn = 1 }
+            }
+        }
         .environment(\.colorScheme, .dark)
     }
+
+    @State private var panelSize: CGSize = .zero
+
+    /// visionOS hover: the card lifts slightly toward you while the pointer is over it.
+    private var hoverLift: CGFloat { tilt == .zero ? 1 : 1.012 }
+
+    /// The edge under the cursor dips away from you, as if pressing on the glass
+    /// (like Apple TV / visionOS parallax).
+    private func updateTilt(for point: CGPoint) {
+        guard panelSize.width > 0, panelSize.height > 0 else { return }
+        let nx = max(-1, min(1, (point.x / panelSize.width) * 2 - 1))
+        let ny = max(-1, min(1, (point.y / panelSize.height) * 2 - 1))
+        withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.8)) {
+            tilt = CGSize(width: -ny * maxTilt, height: nx * maxTilt)
+        }
+    }
+}
+
+private struct PanelSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
+}
+
+extension SiriRootView {
 
     /// The card background. On macOS 26+ this is the system Liquid Glass material (the same
     /// effect macOS uses for its own search bar), with a smoky dark tint. Older macOS versions
@@ -356,7 +430,10 @@ struct SiriRootView: View {
         let shape = RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
         if #available(macOS 26.0, *) {
             Color.clear
-                .glassEffect(.regular.tint(Color.black.opacity(0.55)), in: shape)
+                .glassEffect(.regular.tint(Color.black.opacity(0.22)), in: shape)   // was 0.55: too dark to read as glass
+                // Liquid Glass adds its own soft drop shadow outside the shape; clipping to the
+                // same shape keeps the glass exactly as is but cuts off that halo.
+                .clipShape(shape)
         } else {
             ZStack {
                 shape.fill(.thinMaterial)   // thicker frost: blurs away fine detail (e.g. lines of text) behind the panel
@@ -365,14 +442,29 @@ struct SiriRootView: View {
         }
     }
 
-    /// Liquid Glass draws its own lit rim; the frosted fallback gets a thin static edge instead.
-    @ViewBuilder private var cardEdge: some View {
-        if #available(macOS 26.0, *) {
-            EmptyView()
-        } else {
-            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5)
+    /// A thin glassy rim: light catches the top-left edge, fades along the sides, and picks up
+    /// a fainter reflection at the bottom-right, like the bevel of a glass pane.
+    private var cardEdge: some View {
+        let shape = RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+        return ZStack {
+            // Main highlight rim.
+            shape.strokeBorder(
+                LinearGradient(
+                    stops: [
+                        .init(color: .white.opacity(0.55), location: 0.0),
+                        .init(color: .white.opacity(0.12), location: 0.35),
+                        .init(color: .white.opacity(0.04), location: 0.6),
+                        .init(color: .white.opacity(0.28), location: 1.0),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: 0.8
+            )
+            // Faint inner line for a sense of glass thickness.
+            shape.inset(by: 0.8).strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5)
         }
+        .blendMode(.plusLighter)
     }
 
     private var inputRow: some View {
@@ -385,13 +477,26 @@ struct SiriRootView: View {
                 ListeningWave(level: model.audioLevel, paused: !model.isPanelVisible)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                TextField("Ask Claude…", text: $model.query)
+                TextField("Ask Buddy…", text: $model.query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 20, weight: .medium, design: .rounded))
+                    .font(.system(size: 20, weight: .regular, design: .rounded))
                     .foregroundStyle(.white)
                     .focused($inputFocused)
                     .onSubmit { model.submit() }
             }
+
+            iconButton(
+                systemName: "square.and.pencil",
+                highlighted: false,
+                help: "New chat (⌘N)",
+                action: {
+                    model.newConversation()
+                    inputFocused = true
+                }
+            )
+            .keyboardShortcut("n", modifiers: .command)
+            .disabled(model.isListening)
+            .opacity(model.isListening ? 0.4 : 1)
 
             iconButton(
                 systemName: model.isListening ? "mic.fill" : "mic",
