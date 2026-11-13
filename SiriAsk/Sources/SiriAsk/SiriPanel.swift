@@ -504,6 +504,8 @@ extension SiriRootView {
                 help: model.isListening ? "Stop and send" : "Speak your question",
                 action: { model.toggleListening() }
             )
+            .disabled(model.isBusy && !model.isListening)
+            .opacity(model.isBusy && !model.isListening ? 0.4 : 1)
 
         }
     }

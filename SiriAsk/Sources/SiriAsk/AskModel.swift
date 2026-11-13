@@ -19,6 +19,10 @@ final class AskModel: ObservableObject {
     @Published private(set) var response: String = ""
     @Published private(set) var errorMessage: String = ""
     @Published private(set) var phase: Phase = .idle
+    /// True while a question is with Claude (sent, or its answer still arriving).
+    /// No new question or voice input is accepted until it finishes.
+    var isBusy: Bool { phase == .thinking || phase == .streaming }
+    /// Mirrors `VoiceInput.isActive` (set only through `onActiveChanged`).
     @Published private(set) var isListening = false
     /// Current microphone loudness, used to animate the listening waveform.
     @Published private(set) var audioLevel: Float = 0
@@ -83,12 +87,16 @@ final class AskModel: ObservableObject {
             self.query = text
         }
         voiceInput.onLevel = { [weak self] level in
-            self?.audioLevel = level
+            guard let self, self.isListening else { return }
+            self.audioLevel = level
+        }
+        voiceInput.onActiveChanged = { [weak self] active in
+            guard let self else { return }
+            self.isListening = active
+            if !active { self.audioLevel = 0 }
         }
         voiceInput.onFinal = { [weak self] text in
             guard let self else { return }
-            self.isListening = false
-            self.audioLevel = 0
             self.trace.mark(.transcriptFinal)
             if !text.isEmpty {
                 self.query = text
@@ -96,9 +104,8 @@ final class AskModel: ObservableObject {
             }
         }
         voiceInput.onError = { [weak self] message in
-            guard let self else { return }
-            self.isListening = false
-            self.audioLevel = 0
+            // Never replace an answer that is still arriving.
+            guard let self, !self.isBusy else { return }
             self.question = ""
             self.response = ""
             self.errorMessage = message
@@ -117,7 +124,7 @@ final class AskModel: ObservableObject {
 
     func submit(byVoice: Bool = false) {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, phase != .thinking else { return }
+        guard !text.isEmpty, !isBusy else { return }
 
         voiceOutput.stop()
         askedByVoice = byVoice
@@ -137,21 +144,20 @@ final class AskModel: ObservableObject {
 
     /// Starts listening if it isn't already (used by the fn-key shortcut). Never stops it.
     func startListening() {
-        guard isPanelVisible, !voiceInput.isListening else { return }
+        guard isPanelVisible, !voiceInput.isActive, !isBusy else { return }
         voiceOutput.stop()
-        isListening = true
         trace.begin(at: .listenStart)
         voiceInput.start()
     }
 
     /// Click the microphone to start speaking; click again to stop and send.
     func toggleListening() {
-        guard isPanelVisible || voiceInput.isListening else { return }
+        guard isPanelVisible || voiceInput.isActive else { return }
         voiceOutput.stop()
-        if voiceInput.isListening {
+        if voiceInput.isActive {
             voiceInput.stop()
         } else {
-            isListening = true
+            guard !isBusy else { return }
             trace.begin(at: .listenStart)
             voiceInput.start()
         }
@@ -161,8 +167,6 @@ final class AskModel: ObservableObject {
     func panelHidden() {
         isPanelVisible = false
         voiceInput.cancel()
-        isListening = false
-        audioLevel = 0
         voiceOutput.stop()
     }
 
@@ -181,6 +185,7 @@ final class AskModel: ObservableObject {
     /// Forgets the conversation: clears the panel and restarts Claude Code with no context.
     func newConversation() {
         voiceOutput.stop()
+        voiceInput.cancel()   // a transcript finishing later must not land in the new conversation
         session.restart()
         query = ""
         question = ""
@@ -191,7 +196,7 @@ final class AskModel: ObservableObject {
 
     func shutdown() {
         voiceOutput.stop()
-        voiceInput.stop()
+        voiceInput.cancel()
         session.stop()
     }
 

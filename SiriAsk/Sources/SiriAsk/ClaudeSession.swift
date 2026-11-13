@@ -87,6 +87,9 @@ final class ClaudeSession {
     /// Sends one question. Returns an error message if it couldn't be sent, otherwise nil.
     @discardableResult
     func send(_ text: String) -> String? {
+        // One turn at a time: a second message would be answered after the first, and the
+        // first turn's "result" would end the second turn early.
+        guard !turnActive else { return "Still answering the last question." }
         if !isRunning { launch() }
         guard isRunning, let stdin else {
             return "Couldn't start Claude Code. Check that `claude` is installed."

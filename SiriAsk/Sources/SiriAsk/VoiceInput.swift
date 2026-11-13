@@ -13,6 +13,27 @@ final class VoiceInput {
     var onError: ((String) -> Void)?
     /// How loud the microphone is right now (0 to about 1). Called on the main queue.
     var onLevel: ((Float) -> Void)?
+    /// Called on the main queue when voice input becomes active (leaves `.idle`) or goes back to `.idle`.
+    var onActiveChanged: ((Bool) -> Void)?
+
+    /// Where one listening session is. Every change goes through `state`, so the UI can't drift.
+    enum State: Equatable {
+        case idle
+        case awaitingPermission   // asked for microphone access, waiting for the answer
+        case preparing            // setting up the analyzer (may download the speech model)
+        case listening            // microphone is on, text is arriving
+        case finalizing           // microphone off, waiting for the last text
+    }
+
+    private(set) var state: State = .idle {
+        didSet {
+            let wasActive = oldValue != .idle, isActive = state != .idle
+            if wasActive != isActive { onActiveChanged?(isActive) }
+        }
+    }
+
+    /// True whenever a session is underway, in any state other than `.idle`.
+    var isActive: Bool { state != .idle }
 
     private let engine = AVAudioEngine()
     private var analyzer: SpeechAnalyzer?
@@ -27,41 +48,52 @@ final class VoiceInput {
     private var volatileText = ""
     private var lastText: String { finalizedText + volatileText }
 
-    /// Bumped on every start/cancel so late callbacks from an old session are ignored.
+    /// Bumped on every start and teardown so late callbacks from an old session are ignored.
     private var session = 0
-    private var discardResult = false
     private var silenceWork: DispatchWorkItem?
     private var fallbackWork: DispatchWorkItem?
-    private(set) var isListening = false
 
     func toggle() {
-        isListening ? stop() : start()
+        state == .idle ? start() : stop()
     }
 
     func start() {
-        guard !isListening else { return }
-        discardResult = false
+        guard state == .idle else { return }
+        session += 1
+        let current = session
+        state = .awaitingPermission
 
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             DispatchQueue.main.async {
-                guard let self else { return }
+                // Cancelled (e.g. the panel was hidden) while the permission prompt was up.
+                guard let self, self.session == current, self.state == .awaitingPermission else { return }
                 if granted {
-                    self.beginRecognition()
+                    self.beginRecognition(session: current)
                 } else {
+                    self.state = .idle
                     self.onError?("Microphone is off. Turn it on in System Settings > Privacy & Security > Microphone.")
                 }
             }
         }
     }
 
-    /// Stops capturing audio. The final text is delivered through `onFinal`.
+    /// Stops capturing audio. If the microphone was on, the final text is delivered through `onFinal`.
+    /// If it hadn't turned on yet, the session just ends (nothing was heard).
     func stop() {
-        guard isListening else { return }
+        switch state {
+        case .idle, .finalizing:
+            return
+        case .awaitingPermission, .preparing:
+            abort()
+            return
+        case .listening:
+            break
+        }
+
         silenceWork?.cancel()
         silenceWork = nil
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        isListening = false
+        stopAudio()
+        state = .finalizing
 
         // End the audio stream and ask the analyzer to finalize everything it has heard.
         inputContinuation?.finish()
@@ -73,7 +105,7 @@ final class VoiceInput {
         // If the transcriber never finishes, deliver what we have.
         let current = session
         let fallback = DispatchWorkItem { [weak self] in
-            guard let self, self.session == current, self.analyzer != nil else { return }
+            guard let self, self.session == current, self.state == .finalizing else { return }
             self.finish()
         }
         fallbackWork = fallback
@@ -84,29 +116,25 @@ final class VoiceInput {
     private func scheduleSilenceStop(after seconds: Double = 1.5) {
         silenceWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.isListening else { return }
+            guard let self, self.state == .listening else { return }
             self.stop()
         }
         silenceWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
     }
 
-    /// Stops listening and throws away anything heard so far. Nothing is delivered through `onFinal`.
+    /// Ends the session from any state and throws away anything heard. Nothing is delivered through `onFinal`.
     func cancel() {
-        guard isListening || analyzer != nil else { return }
-        discardResult = true
-        if isListening { stop() }
-        teardown()
+        guard state != .idle else { return }
+        abort()
     }
 
     // MARK: - Recognition
 
-    private func beginRecognition() {
-        session += 1
-        let current = session
+    private func beginRecognition(session current: Int) {
         finalizedText = ""
         volatileText = ""
-        isListening = true   // claim the session now so repeated presses don't start twice
+        state = .preparing
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -114,10 +142,7 @@ final class VoiceInput {
                 try await self.startAnalyzer(session: current)
             } catch {
                 guard self.session == current else { return }
-                self.isListening = false
-                self.engine.stop()
-                self.engine.inputNode.removeTap(onBus: 0)
-                self.teardown()
+                self.abort()
                 self.onError?("Couldn't start speech recognition: \(error.localizedDescription)")
             }
         }
@@ -145,7 +170,7 @@ final class VoiceInput {
             try await request.downloadAndInstall()
             if session == current { onPartial?("") }
         }
-        guard session == current, isListening else { return }
+        guard session == current, state == .preparing else { return }
 
         let analyzer = SpeechAnalyzer(
             modules: [transcriber],
@@ -159,7 +184,7 @@ final class VoiceInput {
             throw VoiceError("No compatible audio format for speech transcription.")
         }
         try await analyzer.prepareToAnalyze(in: analyzerFormat)
-        guard session == current, isListening else {
+        guard session == current, state == .preparing else {
             await analyzer.cancelAndFinishNow()
             return
         }
@@ -184,7 +209,7 @@ final class VoiceInput {
                     }
                     let shown = self.lastText.trimmingCharacters(in: .whitespaces)
                     self.onPartial?(shown)
-                    if !shown.isEmpty, self.isListening {
+                    if !shown.isEmpty, self.state == .listening {
                         self.scheduleSilenceStop()   // a pause after speech ends the question
                     }
                 }
@@ -210,6 +235,7 @@ final class VoiceInput {
         analyzerTask = Task {
             try? await analyzer.start(inputSequence: stream)
         }
+        state = .listening
         scheduleSilenceStop(after: 8)   // nothing said at all: stop after 8 seconds
     }
 
@@ -274,15 +300,27 @@ final class VoiceInput {
         volatileText = ""
     }
 
-    /// Cleans up and reports whatever was heard.
-    private func finish() {
-        if isListening { stop() }
-        let text = lastText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let deliver = !discardResult
+    /// Turns the microphone off and removes the tap. Safe to call when it was never on.
+    private func stopAudio() {
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+    }
+
+    /// Ends the session from any state without delivering anything.
+    private func abort() {
+        stopAudio()
         teardown()
-        if deliver {
-            onFinal?(text)
-        }
+        state = .idle
+    }
+
+    /// Ends the session and reports whatever was heard.
+    private func finish() {
+        guard state == .listening || state == .finalizing else { return }
+        if state == .listening { stopAudio() }
+        let text = lastText.trimmingCharacters(in: .whitespacesAndNewlines)
+        teardown()
+        state = .idle
+        onFinal?(text)
     }
 }
 
