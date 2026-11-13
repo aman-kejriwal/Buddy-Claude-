@@ -13,7 +13,7 @@ mkdir -p "$BUILD_DIR"
 swiftc \
   -O \
   -swift-version 5 \
-  -target arm64-apple-macos13.0 \
+  -target arm64-apple-macos26.0 \
   -framework AppKit -framework SwiftUI -framework Carbon -framework Combine -framework Speech -framework AVFoundation \
   Sources/SiriAsk/*.swift \
   -o "$BUILD_DIR/SiriAsk"
