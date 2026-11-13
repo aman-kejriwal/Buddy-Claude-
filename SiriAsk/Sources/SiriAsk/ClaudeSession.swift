@@ -69,7 +69,11 @@ final class ClaudeSession {
         "/usr/local/bin/claude",
     ]
 
-    init() {
+    /// Extra command-line flags (e.g. a custom system prompt for the write-at-cursor session).
+    private let extraArguments: [String]
+
+    init(extraArguments: [String] = []) {
+        self.extraArguments = extraArguments
         // Writing to a process that has exited must not kill the app.
         signal(SIGPIPE, SIG_IGN)
     }
@@ -159,7 +163,7 @@ final class ClaudeSession {
             "--include-partial-messages",
             "--model", model.rawValue,
             "--no-session-persistence",
-        ]
+        ] + extraArguments
         // Run from home so no project-specific CLAUDE.md is pulled in by accident.
         process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
 

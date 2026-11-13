@@ -1,9 +1,12 @@
 import AppKit
+import Carbon.HIToolbox
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = AskModel()
     private var panelController: SiriPanelController?
     private var hotKey: HotKey?
+    private let caretAssistant = CaretAssistant()
+    private var caretHotKey: HotKey?
     private var fnMonitor: FnHoldMonitor?
     private var statusItem: NSStatusItem?
     private var modelMenu: NSMenu?
@@ -21,6 +24,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKey = HotKey(action: { [weak controller] in controller?.toggle() })
         if hotKey == nil {
             NSLog("SiriAsk: could not register the Option+Space shortcut (another app may own it).")
+        }
+
+        // Option + Shift + Space opens a prompt at the text cursor and types the answer there.
+        caretHotKey = HotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey | shiftKey),
+                             action: { [weak self] in self?.caretAssistant.trigger() })
+        if caretHotKey == nil {
+            NSLog("SiriAsk: could not register the Option+Shift+Space shortcut (another app may own it).")
         }
 
         // Holding fn (Globe) opens the panel straight into voice mode.
@@ -63,6 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let askItem = NSMenuItem(title: "Ask…   ⌥Space", action: #selector(showPanel), keyEquivalent: "")
         askItem.target = self
         menu.addItem(askItem)
+        let writeItem = NSMenuItem(title: "Write at Cursor   ⌥⇧Space", action: nil, keyEquivalent: "")
+        writeItem.isEnabled = false   // informational: the shortcut needs the text cursor in another app
+        menu.addItem(writeItem)
         let newItem = NSMenuItem(title: "New Conversation", action: #selector(newConversation), keyEquivalent: "")
         newItem.target = self
         menu.addItem(newItem)
