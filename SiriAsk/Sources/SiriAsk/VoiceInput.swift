@@ -40,7 +40,6 @@ final class VoiceInput {
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
     private var analyzerTask: Task<Void, Never>?
-    private var converter: AVAudioConverter?
 
     /// Text the transcriber has committed to.
     private var finalizedText = ""
@@ -178,6 +177,11 @@ final class VoiceInput {
         )
         let input = engine.inputNode
         let micFormat = input.outputFormat(forBus: 0)
+        // A zero format means there is no usable input device right now. AVAudioEngine raises an
+        // Objective-C exception (not a Swift error) if we tap or start with it.
+        guard micFormat.sampleRate > 0, micFormat.channelCount > 0 else {
+            throw VoiceError("No microphone is available.")
+        }
         guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
             compatibleWith: [transcriber], considering: micFormat
         ) else {
@@ -190,7 +194,6 @@ final class VoiceInput {
         }
 
         self.analyzer = analyzer
-        converter = micFormat == analyzerFormat ? nil : AVAudioConverter(from: micFormat, to: analyzerFormat)
 
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         inputContinuation = continuation
@@ -220,11 +223,16 @@ final class VoiceInput {
             self.finish()
         }
 
-        let converter = self.converter
+        // Tap with `format: nil` so the tap always uses the input's *current* format. The format read
+        // above can go stale during the awaits (e.g. Bluetooth headphones switching to their mic
+        // profile), and tapping with a stale format raises an Objective-C exception. That exception
+        // unwinds through Swift's task machinery and leaves the main thread in a corrupt state,
+        // which crashed the app on the next mouse move.
+        let converter = TapConverter(to: analyzerFormat)
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 1024, format: micFormat) { [weak self] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
             self?.reportLevel(of: buffer)
-            if let converted = Self.convert(buffer, with: converter, to: analyzerFormat) {
+            if let converted = converter.convert(buffer) {
                 continuation.yield(AnalyzerInput(buffer: converted))
             }
         }
@@ -237,29 +245,6 @@ final class VoiceInput {
         }
         state = .listening
         scheduleSilenceStop(after: 8)   // nothing said at all: stop after 8 seconds
-    }
-
-    /// Converts a microphone buffer into the format the analyzer wants.
-    private static func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter?,
-                                to format: AVAudioFormat) -> AVAudioPCMBuffer? {
-        guard let converter else { return buffer }
-        let ratio = format.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 16
-        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
-
-        var consumed = false
-        var error: NSError?
-        let status = converter.convert(to: output, error: &error) { _, inputStatus in
-            if consumed {
-                inputStatus.pointee = .noDataNow
-                return nil
-            }
-            consumed = true
-            inputStatus.pointee = .haveData
-            return buffer
-        }
-        guard status != .error, error == nil, output.frameLength > 0 else { return nil }
-        return output
     }
 
     /// Measures the loudness of one audio buffer and reports it on the main queue.
@@ -295,7 +280,6 @@ final class VoiceInput {
             Task { await analyzer.cancelAndFinishNow() }
         }
         analyzer = nil
-        converter = nil
         finalizedText = ""
         volatileText = ""
     }
@@ -321,6 +305,42 @@ final class VoiceInput {
         teardown()
         state = .idle
         onFinal?(text)
+    }
+}
+
+/// Converts microphone buffers into the analyzer's format. Used only from the audio tap's thread.
+/// Rebuilds its converter whenever the microphone's format changes.
+private final class TapConverter {
+    private let format: AVAudioFormat
+    private var converter: AVAudioConverter?
+
+    init(to format: AVAudioFormat) {
+        self.format = format
+    }
+
+    func convert(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        if buffer.format == format { return buffer }
+        if converter?.inputFormat != buffer.format {
+            converter = AVAudioConverter(from: buffer.format, to: format)
+        }
+        guard let converter else { return nil }
+        let ratio = format.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 16
+        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
+
+        var consumed = false
+        var error: NSError?
+        let status = converter.convert(to: output, error: &error) { _, inputStatus in
+            if consumed {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            inputStatus.pointee = .haveData
+            return buffer
+        }
+        guard status != .error, error == nil, output.frameLength > 0 else { return nil }
+        return output
     }
 }
 
