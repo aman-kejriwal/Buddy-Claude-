@@ -25,6 +25,16 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
         @Published var showCount = 0
         /// Bumped on every warning so the warning pops and shakes again, even if it is already shown.
         @Published var flashCount = 0
+
+        // Prompt "coming out of the cursor": a beam from the caret to the card.
+        /// Whether the app reported where the caret is (no beam otherwise, e.g. in Chrome).
+        @Published var hasCaret = false
+        /// True when the card sits below the caret (beam on top), false when above it.
+        @Published var beamOnTop = true
+        /// Horizontal position of the caret inside the prompt window, in points.
+        @Published var beamX: CGFloat = 40
+        /// Drives the open animation (false = collapsed into the caret).
+        @Published var appeared = false
     }
 
     private let vm = ViewModel()
@@ -156,22 +166,35 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
 
     private func showPrompt(near caret: NSRect?) {
         isPrompting = true
-        promptHosting.layoutSubtreeIfNeeded()
-        let size = promptHosting.fittingSize
-        promptPanel.setFrame(Self.frame(size: size, near: caret, preferBelow: true), display: true)
-        promptPanel.alphaValue = 0
-        // A non-activating panel takes the keyboard without activating SiriAsk, so the
-        // target app stays frontmost and its text cursor stays where it was.
-        promptPanel.makeKeyAndOrderFront(nil)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            promptPanel.animator().alphaValue = 1
+        vm.appeared = false
+        vm.hasCaret = caret != nil
+        // Let SwiftUI apply the new label first, so the measured size is the real one
+        // (otherwise the card can be taller than its window and get cut off).
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isPrompting else { return }
+            self.promptHosting.layoutSubtreeIfNeeded()
+            let size = self.promptHosting.fittingSize
+            let frame = Self.frame(size: size, near: caret, preferBelow: true, gap: 1)
+            if let caret {
+                self.vm.beamOnTop = frame.maxY <= caret.minY + 1
+                // Keep the beam on the card (away from its rounded corners).
+                self.vm.beamX = min(max(caret.midX - frame.minX, 22), size.width - 22)
+            }
+            self.promptPanel.setFrame(frame, display: true)
+            self.promptPanel.alphaValue = 1
+            // A non-activating panel takes the keyboard without activating SiriAsk, so the
+            // target app stays frontmost and its text cursor stays where it was.
+            self.promptPanel.makeKeyAndOrderFront(nil)
+            self.vm.showCount += 1
+            DispatchQueue.main.async {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) { self.vm.appeared = true }
+            }
         }
-        vm.showCount += 1
     }
 
     private func hidePrompt() {
         isPrompting = false
+        vm.appeared = false
         promptPanel.orderOut(nil)
     }
 
@@ -375,12 +398,15 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
 
     /// Places a window of `size` next to the caret, kept on screen. The prompt goes below the
     /// line (like autocomplete); the status pill goes above it so it never covers new text.
-    private static func frame(size: NSSize, near caret: NSRect?, preferBelow: Bool) -> NSRect {
+    /// Always fully inside the visible area of the caret's screen (not under the menu bar or
+    /// Dock): flips above the line when there's no room below, slides left at the right edge.
+    private static func frame(size: NSSize, near caret: NSRect?, preferBelow: Bool, gap: CGFloat = 6) -> NSRect {
         let anchor = caret ?? NSRect(origin: NSEvent.mouseLocation, size: NSSize(width: 1, height: 18))
-        let screen = NSScreen.screens.first { $0.frame.contains(NSPoint(x: anchor.midX, y: anchor.midY)) }
+        let point = NSPoint(x: anchor.midX, y: anchor.midY)
+        let screen = NSScreen.screens.first { $0.frame.contains(point) }
+            ?? NSScreen.screens.min { distance(point, $0.frame) < distance(point, $1.frame) }
             ?? NSScreen.main ?? NSScreen.screens[0]
         let visible = screen.visibleFrame
-        let gap: CGFloat = 6
 
         let below = anchor.minY - gap - size.height
         let above = anchor.maxY + gap
@@ -392,9 +418,15 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
         }
         y = min(max(y, visible.minY), visible.maxY - size.height)
 
-        var x = anchor.minX - 14
+        var x = anchor.minX - 30
         x = min(max(x, visible.minX + 4), visible.maxX - size.width - 4)
         return NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
+    private static func distance(_ p: NSPoint, _ r: NSRect) -> CGFloat {
+        let dx = max(r.minX - p.x, 0, p.x - r.maxX)
+        let dy = max(r.minY - p.y, 0, p.y - r.maxY)
+        return dx * dx + dy * dy
     }
 
     // MARK: - Prompt text sent to Claude
@@ -493,7 +525,47 @@ struct CaretPromptView: View {
     let onCancel: () -> Void
     @FocusState private var focused: Bool
 
+    private static let width: CGFloat = 460
+    private static let radius: CGFloat = 18
+
     var body: some View {
+        let shape = CaretBubbleShape(radius: Self.radius,
+                                     pointerX: model.beamX,
+                                     pointerHeight: model.hasCaret ? CaretBubbleShape.pointerHeight : 0,
+                                     pointsUp: model.beamOnTop)
+        content
+            // Room for the pointer on the side that faces the caret.
+            .padding(.top, model.hasCaret && model.beamOnTop ? CaretBubbleShape.pointerHeight : 0)
+            .padding(.bottom, model.hasCaret && !model.beamOnTop ? CaretBubbleShape.pointerHeight : 0)
+            .frame(width: Self.width, alignment: .leading)
+            .background(
+                Color.clear
+                    .glassEffect(.regular.tint(Color.black.opacity(0.35)), in: shape)
+                    .clipShape(shape)
+            )
+            .overlay(
+                shape.stroke(LinearGradient(colors: [siriColors[0].opacity(0.75), siriColors[2].opacity(0.55),
+                                                     .white.opacity(0.2)],
+                                            startPoint: model.beamOnTop ? .top : .bottom,
+                                            endPoint: model.beamOnTop ? .bottom : .top),
+                             lineWidth: 1)
+                    .allowsHitTesting(false)
+            )
+            // Pops out of the caret: grows from the pointer's tip.
+            .scaleEffect(model.appeared ? 1 : 0.1, anchor: tipAnchor)
+            .opacity(model.appeared ? 1 : 0)
+            .environment(\.colorScheme, .dark)
+            .onAppear { focused = true }
+            .onChange(of: model.showCount) { _ in focused = true }
+            .onExitCommand(perform: onCancel)
+    }
+
+    private var tipAnchor: UnitPoint {
+        guard model.hasCaret else { return .center }
+        return UnitPoint(x: model.beamX / Self.width, y: model.beamOnTop ? 0 : 1)
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
                 OrbView(active: false)
@@ -517,12 +589,50 @@ struct CaretPromptView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(width: 460, alignment: .leading)
-        .modifier(CaretGlass(radius: 18))
-        .environment(\.colorScheme, .dark)
-        .onAppear { focused = true }
-        .onChange(of: model.showCount) { _ in focused = true }
-        .onExitCommand(perform: onCancel)
+    }
+}
+
+/// A rounded card with a pointed tip (like a speech bubble) whose point sits on the text
+/// cursor. The tip is on top when the card is below the line, at the bottom when above it.
+struct CaretBubbleShape: Shape {
+    static let pointerHeight: CGFloat = 11
+    static let pointerWidth: CGFloat = 22
+
+    var radius: CGFloat
+    /// The tip's x position inside the shape.
+    var pointerX: CGFloat
+    /// 0 draws a plain rounded card (no caret position known).
+    var pointerHeight: CGFloat
+    var pointsUp: Bool
+
+    func path(in rect: CGRect) -> Path {
+        // Drawn pointing up, then flipped when the tip should point down.
+        let h = pointerHeight
+        let body = CGRect(x: rect.minX, y: rect.minY + h, width: rect.width, height: rect.height - h)
+        let r = min(radius, body.height / 2)
+        let half = Self.pointerWidth / 2
+        let tipX = min(max(pointerX, body.minX + r + half), body.maxX - r - half)
+
+        var p = Path()
+        p.move(to: CGPoint(x: body.minX + r, y: body.minY))
+        if h > 0 {
+            p.addLine(to: CGPoint(x: tipX - half, y: body.minY))
+            // Slightly curved sides and a softened point.
+            p.addQuadCurve(to: CGPoint(x: tipX - 1.5, y: rect.minY + 1),
+                           control: CGPoint(x: tipX - half * 0.45, y: body.minY))
+            p.addQuadCurve(to: CGPoint(x: tipX + 1.5, y: rect.minY + 1),
+                           control: CGPoint(x: tipX, y: rect.minY - 0.5))
+            p.addQuadCurve(to: CGPoint(x: tipX + half, y: body.minY),
+                           control: CGPoint(x: tipX + half * 0.45, y: body.minY))
+        }
+        p.addArc(tangent1End: CGPoint(x: body.maxX, y: body.minY), tangent2End: CGPoint(x: body.maxX, y: body.maxY), radius: r)
+        p.addArc(tangent1End: CGPoint(x: body.maxX, y: body.maxY), tangent2End: CGPoint(x: body.minX, y: body.maxY), radius: r)
+        p.addArc(tangent1End: CGPoint(x: body.minX, y: body.maxY), tangent2End: CGPoint(x: body.minX, y: body.minY), radius: r)
+        p.addArc(tangent1End: CGPoint(x: body.minX, y: body.minY), tangent2End: CGPoint(x: body.maxX, y: body.minY), radius: r)
+        p.closeSubpath()
+
+        guard !pointsUp else { return p }
+        return p.applying(CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: rect.minY * 2 + rect.height))
     }
 }
 

@@ -139,6 +139,19 @@ struct CaretContext {
     /// for the character after (or before) the cursor.
     private static func caretRect(_ el: AXUIElement, range: CFRange) -> NSRect? {
         if let r = bounds(el, CFRange(location: range.location, length: range.length)), r.height > 0 {
+            // For an empty range some apps (TextEdit, NSTextView) answer with the right x but
+            // the line above. The neighbouring characters have the right line: when one of them
+            // touches the caret's x, take its y.
+            if range.length == 0 {
+                let prev = range.location > 0 ? bounds(el, CFRange(location: range.location - 1, length: 1)) : nil
+                let next = bounds(el, CFRange(location: range.location, length: 1))
+                if let p = prev, p.height > 0, abs(p.maxX - r.minX) < 1.5 {
+                    return toCocoa(CGRect(x: r.minX, y: p.minY, width: 1, height: p.height))
+                }
+                if let n = next, n.height > 0, n.width > 0, abs(n.minX - r.minX) < 1.5 {
+                    return toCocoa(CGRect(x: r.minX, y: n.minY, width: 1, height: n.height))
+                }
+            }
             return toCocoa(CGRect(x: r.minX, y: r.minY, width: 1, height: r.height))
         }
         if let r = bounds(el, CFRange(location: range.location, length: 1)), r.height > 0 {
