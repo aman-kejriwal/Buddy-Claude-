@@ -447,24 +447,49 @@ extension SiriRootView {
     private var cardEdge: some View {
         let shape = RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
         return ZStack {
-            // Main highlight rim.
+            // Light caught on the edge and spilling a few points inward: a soft, blurred
+            // band inside the rim makes the pane read as thick glass.
             shape.strokeBorder(
                 LinearGradient(
                     stops: [
-                        .init(color: .white.opacity(0.55), location: 0.0),
-                        .init(color: .white.opacity(0.12), location: 0.35),
-                        .init(color: .white.opacity(0.04), location: 0.6),
-                        .init(color: .white.opacity(0.28), location: 1.0),
+                        .init(color: .white.opacity(0.30), location: 0.0),
+                        .init(color: .white.opacity(0.06), location: 0.4),
+                        .init(color: .white.opacity(0.02), location: 0.6),
+                        .init(color: .white.opacity(0.16), location: 1.0),
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 ),
-                lineWidth: 0.8
+                lineWidth: 7
             )
-            // Faint inner line for a sense of glass thickness.
-            shape.inset(by: 0.8).strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5)
+            .blur(radius: 4)
+            .clipShape(shape)
+            .blendMode(.plusLighter)
+
+            // Main highlight rim: brighter and a touch thicker, like a polished bevel.
+            shape.strokeBorder(
+                LinearGradient(
+                    stops: [
+                        .init(color: .white.opacity(0.85), location: 0.0),
+                        .init(color: .white.opacity(0.22), location: 0.3),
+                        .init(color: .white.opacity(0.06), location: 0.6),
+                        .init(color: .white.opacity(0.45), location: 1.0),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: 1.2
+            )
+            .blendMode(.plusLighter)
+
+            // Thin dark line just inside the rim: the far face of the glass edge,
+            // which gives the bevel depth.
+            shape.inset(by: 1.2).strokeBorder(Color.black.opacity(0.22), lineWidth: 0.6)
+
+            // Faint inner reflection line.
+            shape.inset(by: 1.8).strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                .blendMode(.plusLighter)
         }
-        .blendMode(.plusLighter)
     }
 
     private var inputRow: some View {
