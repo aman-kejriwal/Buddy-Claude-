@@ -19,8 +19,12 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
         @Published var status = ""
         @Published var isWriting = false
         @Published var isError = false
+        /// The toast is a message from Claude (couldn't write it, needs more detail), not an error.
+        @Published var isNote = false
         /// Bumped each time the prompt opens so the text field takes focus again.
         @Published var showCount = 0
+        /// Bumped on every warning so the warning pops and shakes again, even if it is already shown.
+        @Published var flashCount = 0
     }
 
     private let vm = ViewModel()
@@ -30,6 +34,8 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
         "--tools", "",           // no tools: it only writes text
     ])
     private let typer = CaretTyper()
+    /// Keeps refusals, "I don't understand" replies and assistant remarks out of the user's text.
+    private var outputFilter = CaretOutputFilter()
 
     private let promptPanel: CaretPromptPanel
     private let statusPanel: NSPanel
@@ -190,6 +196,7 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
         streamFinished = false
         typedAnything = false
         pendingWhitespace = ""
+        outputFilter = CaretOutputFilter()
         vm.isWriting = true
         vm.isError = false
         vm.status = "Writing…"
@@ -221,6 +228,12 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
 
     private func received(_ text: String) {
         guard isWriting else { return }
+        type(outputFilter.feed(text))
+    }
+
+    /// Types filtered text, holding whitespace back so the output never starts or ends with it.
+    private func type(_ text: String) {
+        guard !text.isEmpty else { return }
         var out = ""
         for ch in text {
             if ch.isWhitespace {
@@ -243,7 +256,17 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
         streamFinished = true
         if let error {
             fail(error)
-        } else if !typedAnything {
+            return
+        }
+        switch outputFilter.finish() {
+        case .note(let message):
+            // Not text for the field: show it instead (nothing was typed).
+            showNote(message)
+            return
+        case .text(let rest):
+            type(rest)
+        }
+        if !typedAnything {
             fail("Claude didn't write anything.")
         } else if typer.isIdle && !typer.isHeld {
             finishWriting()
@@ -264,6 +287,14 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
         typer.cancel()
         if !streamFinished { session.restart() }   // abandons the turn in flight
         finishWriting()
+    }
+
+    /// Claude's reply wasn't text to insert ("I need to know who this is for…"): show it as a toast.
+    private func showNote(_ message: String) {
+        typer.cancel()
+        let caret = context?.caretRect
+        finishWriting()
+        flash(message, at: caret, seconds: 6, isNote: true)
     }
 
     private func fail(_ message: String) {
@@ -328,10 +359,12 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
     }
 
     /// Shows a short message near the cursor (or the pointer), then hides it.
-    private func flash(_ message: String, at caret: NSRect?, seconds: Double = 3) {
+    private func flash(_ message: String, at caret: NSRect?, seconds: Double = 4, isNote: Bool = false) {
         vm.isWriting = false
         vm.isError = true
+        vm.isNote = isNote
         vm.status = message
+        vm.flashCount += 1
         showStatus(near: caret)
         let work = DispatchWorkItem { [weak self] in self?.statusPanel.orderOut(nil) }
         statusHideWork = work
@@ -379,9 +412,14 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
     gets just the value.
     - Continue naturally from the text before the cursor and never repeat it. If text is selected, \
     output the full replacement for the selection.
-    - Don't invent names, dates or facts. If something essential is unknown, use a short \
-    placeholder in square brackets, like [Name].
-    - If the request is a question, write the answer as text to insert.
+    - If the request is a question, write the answer as text to insert, but only the answer \
+    itself, nothing around it.
+    - Never talk to the user. No "Here's your email:", no "Let me know if you'd like changes", \
+    no "I hope this helps", no notes about placeholders or tone. Lines meant for the reader of the \
+    text (for example the email's recipient) are fine.
+
+    - If you can't generate the output for the question asked by any reason then you must respond with a NOTE:
+    followed by a brief explanation, and do not write any other text.
     """
 
     static func message(request: String, context ctx: CaretContext) -> String {
@@ -492,21 +530,23 @@ struct CaretStatusView: View {
     @ObservedObject var model: CaretAssistant.ViewModel
 
     var body: some View {
+        if model.isError {
+            CaretWarningView(message: model.status, trigger: model.flashCount, isNote: model.isNote)
+        } else {
+            writingPill
+        }
+    }
+
+    private var writingPill: some View {
         HStack(spacing: 8) {
-            if model.isError {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(Color(red: 1.0, green: 0.64, blue: 0.23))
-            } else {
-                OrbView(active: model.isWriting)
-                    .frame(width: 30, height: 30)
-                    .scaleEffect(0.7)
-                    .frame(width: 22, height: 22)
-            }
+            OrbView(active: model.isWriting)
+                .frame(width: 30, height: 30)
+                .scaleEffect(0.7)
+                .frame(width: 22, height: 22)
             Text(model.status)
                 .font(.system(size: 12, weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.9))
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(width: model.isError ? 300 : nil, alignment: .leading)
             if model.isWriting {
                 Text("esc to stop")
                     .font(.system(size: 11, design: .rounded))
@@ -519,4 +559,63 @@ struct CaretStatusView: View {
         .modifier(CaretGlass(radius: 14))
         .environment(\.colorScheme, .dark)
     }
+}
+
+/// A warning that has to stand out on any background (light pages, dark pages, busy
+/// wallpapers): a solid amber card with a white border and a glow, which pops in and shakes.
+private struct CaretWarningView: View {
+    let message: String
+    let trigger: Int
+    /// A message from Claude rather than a warning: blue-violet, speech-bubble icon.
+    var isNote = false
+
+    private static let amber = Color(red: 1.0, green: 0.62, blue: 0.10)
+    private static let amberDeep = Color(red: 0.93, green: 0.40, blue: 0.05)
+    private static let blue = Color(red: 0.16, green: 0.42, blue: 0.95)
+    private static let violet = Color(red: 0.45, green: 0.25, blue: 0.88)
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        HStack(spacing: 10) {
+            Image(systemName: isNote ? "text.bubble.fill" : "exclamationmark.triangle.fill")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.white)
+            Text(message)
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 300, alignment: .leading)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(shape.fill(LinearGradient(colors: isNote ? [Self.blue, Self.violet] : [Self.amber, Self.amberDeep],
+                                              startPoint: .top, endPoint: .bottom)))
+        .overlay(shape.strokeBorder(.white.opacity(0.9), lineWidth: 1.5))
+        // Dark shadow lifts it off light backgrounds; the amber glow shows on dark ones.
+        .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+        .shadow(color: (isNote ? Self.blue : Self.amber).opacity(0.8), radius: 14)
+        .keyframeAnimator(initialValue: WarningMotion(), trigger: trigger) { content, m in
+            content.scaleEffect(m.scale).offset(x: m.shake)
+        } keyframes: { _ in
+            KeyframeTrack(\.scale) {
+                SpringKeyframe(1.08, duration: 0.15)
+                SpringKeyframe(1.0, duration: 0.25)
+            }
+            KeyframeTrack(\.shake) {
+                LinearKeyframe(0, duration: 0.15)
+                CubicKeyframe(-7, duration: 0.06)
+                CubicKeyframe(7, duration: 0.08)
+                CubicKeyframe(-5, duration: 0.08)
+                CubicKeyframe(4, duration: 0.07)
+                CubicKeyframe(0, duration: 0.06)
+            }
+        }
+        .padding(24)   // room for the glow, shake and pop inside the window
+        .fixedSize()
+    }
+}
+
+private struct WarningMotion {
+    var scale: CGFloat = 1
+    var shake: CGFloat = 0
 }

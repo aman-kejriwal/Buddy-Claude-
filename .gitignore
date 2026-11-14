@@ -8,6 +8,10 @@
 *.key
 *.p12
 *.p8
+*.crt
+*.cer
+*.csr
+*.keychain*
 
 # ── MCP configs (contain local paths & username) ──────
 .mcp.json

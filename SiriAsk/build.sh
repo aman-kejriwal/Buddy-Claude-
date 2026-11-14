@@ -30,8 +30,16 @@ fi
 mkdir -p "$APP/Contents/Resources"
 cp "$HERE/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
-# Ad-hoc signature so macOS will launch it locally.
-codesign --force --sign - "$APP" >/dev/null 2>&1 || true
+# Sign with a stable local certificate when there is one, so macOS keeps the Accessibility
+# and Input Monitoring permissions across rebuilds. (An ad-hoc signature changes with every
+# build, and macOS then treats the new build as a different app and asks again.)
+SIGN_ID="SiriAsk Local Signing"
+if security find-certificate -c "$SIGN_ID" >/dev/null 2>&1; then
+  codesign --force --sign "$SIGN_ID" "$APP"
+else
+  echo "Note: no \"$SIGN_ID\" certificate; using an ad-hoc signature (permissions reset each build)."
+  codesign --force --sign - "$APP" >/dev/null 2>&1 || true
+fi
 
 echo "Built: $APP"
 echo "Open it with: open \"$APP\""
