@@ -1,7 +1,7 @@
 import AVFoundation
 
 /// Speaks text with Gradium's text-to-speech API.
-/// The API key and voice ID are read from `SiriAsk/.env` (next to `SiriAsk.app`).
+/// The API key and voice ID are read from `SiriAsk/.env` (next to `Buddy.app`).
 ///
 /// Playback is streamed: Gradium sends the WAV progressively (first audio after ~0.6 s,
 /// and faster than real time), so audio starts playing as soon as a little has arrived

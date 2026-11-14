@@ -60,6 +60,7 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
     /// Whitespace held back until a visible character follows (trims leading/trailing blank lines).
     private var pendingWhitespace = ""
 
+    private var promptSizeObserver: AnyCancellable?
     private var cancelMonitors: [Any] = []
     private var activationObserver: NSObjectProtocol?
     private var statusHideWork: DispatchWorkItem?
@@ -97,6 +98,12 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
         statusPanel.contentView = statusHosting
         statusPanel.ignoresMouseEvents = true
 
+        // The prompt wraps onto more lines as it gets longer: grow the window with it.
+        // (@Published fires before the change lands, so resize on the next main-queue turn.)
+        promptSizeObserver = vm.$prompt
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.resizePromptToFit() }
+
         session.onText = { [weak self] text in self?.received(text) }
         session.onFinished = { [weak self] error in self?.turnFinished(error) }
         typer.onDrained = { [weak self] in
@@ -114,7 +121,7 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
 
         guard CaretContext.isTrusted else {
             CaretContext.requestTrust()
-            flash("Allow SiriAsk in System Settings › Privacy & Security › Accessibility, then try again.",
+            flash("Allow Buddy in System Settings › Privacy & Security › Accessibility, then try again.",
                   at: nil, seconds: 5)
             return
         }
@@ -190,6 +197,24 @@ final class CaretAssistant: NSObject, NSWindowDelegate {
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) { self.vm.appeared = true }
             }
         }
+    }
+
+    /// Matches the prompt window's height to its content, keeping the edge that faces the caret
+    /// in place: a card below the line grows downward, a card above it grows upward.
+    private func resizePromptToFit() {
+        guard isPrompting, promptPanel.isVisible else { return }
+        promptHosting.layoutSubtreeIfNeeded()
+        let height = promptHosting.fittingSize.height
+        var frame = promptPanel.frame
+        guard abs(height - frame.height) > 0.5 else { return }
+
+        let growsUp = vm.hasCaret && !vm.beamOnTop
+        if !growsUp { frame.origin.y = frame.maxY - height }
+        frame.size.height = height
+        if let visible = (promptPanel.screen ?? NSScreen.main)?.visibleFrame {
+            frame.origin.y = min(max(frame.origin.y, visible.minY), visible.maxY - height)
+        }
+        promptPanel.setFrame(frame, display: true)
     }
 
     private func hidePrompt() {
@@ -570,7 +595,9 @@ struct CaretPromptView: View {
             HStack(spacing: 10) {
                 OrbView(active: false)
                     .frame(width: 30, height: 30)
-                TextField("What should Buddy write here?", text: $model.prompt)
+                // Wraps and grows taller as the request gets longer (Return still submits).
+                TextField("What should Buddy write here?", text: $model.prompt, axis: .vertical)
+                    .lineLimit(1...8)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16, design: .rounded))
                     .foregroundStyle(.white)

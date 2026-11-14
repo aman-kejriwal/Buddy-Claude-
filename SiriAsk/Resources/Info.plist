@@ -3,15 +3,15 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>SiriAsk</string>
+    <string>Buddy</string>
     <key>CFBundleDisplayName</key>
-    <string>SiriAsk</string>
+    <string>Buddy</string>
     <key>CFBundleIdentifier</key>
     <string>local.siriask</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleExecutable</key>
-    <string>SiriAsk</string>
+    <string>Buddy</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -25,8 +25,8 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>SiriAsk listens to your voice when you click the microphone, so you can ask questions by speaking.</string>
+    <string>Buddy listens to your voice when you click the microphone, so you can ask questions by speaking.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>SiriAsk turns your spoken question into text.</string>
+    <string>Buddy turns your spoken question into text.</string>
 </dict>
 </plist>

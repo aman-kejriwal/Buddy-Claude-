@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds SiriAsk with swiftc and packages it as SiriAsk.app next to this script.
+# Builds Buddy with swiftc and packages it as Buddy.app next to this script.
 # (Uses swiftc directly, so full Xcode is not required.)
 set -euo pipefail
 
@@ -7,7 +7,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
 
 BUILD_DIR="$HERE/.build"
-APP="$HERE/SiriAsk.app"
+APP="$HERE/Buddy.app"
 mkdir -p "$BUILD_DIR"
 
 swiftc \
@@ -16,11 +16,11 @@ swiftc \
   -target arm64-apple-macos26.0 \
   -framework AppKit -framework SwiftUI -framework Carbon -framework Combine -framework Speech -framework AVFoundation \
   Sources/SiriAsk/*.swift \
-  -o "$BUILD_DIR/SiriAsk"
+  -o "$BUILD_DIR/Buddy"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
-cp "$BUILD_DIR/SiriAsk" "$APP/Contents/MacOS/SiriAsk"
+cp "$BUILD_DIR/Buddy" "$APP/Contents/MacOS/Buddy"
 cp "$HERE/Resources/Info.plist" "$APP/Contents/Info.plist"
 
 # App icon (regenerate with Tools/build_icon.sh if the design changes).

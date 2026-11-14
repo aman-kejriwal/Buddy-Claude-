@@ -67,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "SiriAsk")
+        item.button?.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Buddy")
 
         let menu = NSMenu()
         let askItem = NSMenuItem(title: "Ask…   ⌥Space", action: #selector(showPanel), keyEquivalent: "")
@@ -97,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.modelItem = modelItem
         refreshModelMenu()
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit SiriAsk", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit Buddy", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         item.menu = menu
         statusItem = item
